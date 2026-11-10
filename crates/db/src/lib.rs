@@ -1,11 +1,20 @@
 //! Postgres access. Runtime-checked sqlx queries (no live DB needed to compile).
 
-use api_types::Item;
+use api_types::{CreateProject, Item, Project, ProjectPatch};
 use chrono::{DateTime, Utc};
 use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
 use uuid::Uuid;
 
 pub type Pool = PgPool;
+
+#[derive(Debug, thiserror::Error)]
+pub enum DbError {
+    /// Unique-name violation on `projects` (case-insensitive).
+    #[error("a project with this name already exists")]
+    Conflict,
+    #[error(transparent)]
+    Sql(#[from] sqlx::Error),
+}
 
 #[derive(FromRow)]
 struct ItemRow {
@@ -68,4 +77,184 @@ pub async fn complete_item(pool: &Pool, id: Uuid) -> Result<Option<Item>, sqlx::
     .fetch_optional(pool)
     .await?;
     Ok(row.map(Into::into))
+}
+
+// ---- projects (interface only; bodies arrive in the Code issue #3) ----------
+
+/// Insert a validated project. Unique-name violation -> `DbError::Conflict`.
+pub async fn insert_project(_pool: &Pool, _input: &CreateProject) -> Result<Project, DbError> {
+    todo!("Code issue #3")
+}
+
+/// All projects, newest first.
+pub async fn list_projects(_pool: &Pool) -> Result<Vec<Project>, DbError> {
+    todo!("Code issue #3")
+}
+
+pub async fn get_project(_pool: &Pool, _id: Uuid) -> Result<Option<Project>, DbError> {
+    todo!("Code issue #3")
+}
+
+/// Applies only the `Some` fields and bumps `updated_at`. `None` if the id is unknown.
+pub async fn update_project(
+    _pool: &Pool,
+    _id: Uuid,
+    _patch: &ProjectPatch,
+) -> Result<Option<Project>, DbError> {
+    todo!("Code issue #3")
+}
+
+/// `true` if a row was deleted, `false` if the id was unknown.
+pub async fn delete_project(_pool: &Pool, _id: Uuid) -> Result<bool, DbError> {
+    todo!("Code issue #3")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn new(name: &str) -> CreateProject {
+        CreateProject {
+            name: name.into(),
+            repo_url: None,
+            description: None,
+        }
+    }
+
+    fn full(name: &str) -> CreateProject {
+        CreateProject {
+            name: name.into(),
+            repo_url: Some("https://github.com/a/b".into()),
+            description: Some("desc".into()),
+        }
+    }
+
+    fn patch_name(name: &str) -> ProjectPatch {
+        ProjectPatch {
+            name: Some(name.into()),
+            ..Default::default()
+        }
+    }
+
+    // ---- B. storage tests (real Postgres, fresh DB per test) -----------------
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn insert_then_get_returns_same_project(pool: PgPool) {
+        let created = insert_project(&pool, &full("Alpha")).await.unwrap();
+        let fetched = get_project(&pool, created.id).await.unwrap();
+        assert_eq!(fetched, Some(created));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn list_projects_returns_newest_first(pool: PgPool) {
+        insert_project(&pool, &new("first")).await.unwrap();
+        insert_project(&pool, &new("second")).await.unwrap();
+        let names: Vec<String> = list_projects(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, vec!["second", "first"]);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn insert_duplicate_name_is_conflict(pool: PgPool) {
+        insert_project(&pool, &new("Alpha")).await.unwrap();
+        let err = insert_project(&pool, &new("Alpha")).await.unwrap_err();
+        assert!(matches!(err, DbError::Conflict));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn insert_duplicate_name_different_case_is_conflict(pool: PgPool) {
+        insert_project(&pool, &new("Foo")).await.unwrap();
+        let err = insert_project(&pool, &new("foo")).await.unwrap_err();
+        assert!(matches!(err, DbError::Conflict));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn update_changes_only_given_fields(pool: PgPool) {
+        let created = insert_project(&pool, &full("Alpha")).await.unwrap();
+        let updated = update_project(&pool, created.id, &patch_name("Renamed"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.name, "Renamed");
+        assert_eq!(updated.repo_url, created.repo_url);
+        assert_eq!(updated.description, created.description);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn update_can_clear_optional_fields(pool: PgPool) {
+        let created = insert_project(&pool, &full("Alpha")).await.unwrap();
+        let patch = ProjectPatch {
+            repo_url: Some(None),
+            description: Some(None),
+            ..Default::default()
+        };
+        let updated = update_project(&pool, created.id, &patch)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.repo_url, None);
+        assert_eq!(updated.description, None);
+        assert_eq!(updated.name, "Alpha");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn update_bumps_updated_at_and_keeps_created_at(pool: PgPool) {
+        let created = insert_project(&pool, &full("Alpha")).await.unwrap();
+        let updated = update_project(&pool, created.id, &patch_name("Renamed"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.created_at, created.created_at);
+        assert!(updated.updated_at > created.updated_at);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn get_unknown_id_returns_none(pool: PgPool) {
+        assert_eq!(get_project(&pool, Uuid::now_v7()).await.unwrap(), None);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn update_unknown_id_returns_none(pool: PgPool) {
+        let result = update_project(&pool, Uuid::now_v7(), &patch_name("x"))
+            .await
+            .unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn delete_unknown_id_returns_false(pool: PgPool) {
+        assert!(!delete_project(&pool, Uuid::now_v7()).await.unwrap());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn delete_removes_project(pool: PgPool) {
+        let created = insert_project(&pool, &new("Alpha")).await.unwrap();
+        assert!(delete_project(&pool, created.id).await.unwrap());
+        assert_eq!(get_project(&pool, created.id).await.unwrap(), None);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn deleting_twice_returns_false_the_second_time(pool: PgPool) {
+        let created = insert_project(&pool, &new("Alpha")).await.unwrap();
+        assert!(delete_project(&pool, created.id).await.unwrap());
+        assert!(!delete_project(&pool, created.id).await.unwrap());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn db_rejects_name_over_100_chars_without_validation(pool: PgPool) {
+        let err = sqlx::query("INSERT INTO projects (id, name) VALUES ($1, $2)")
+            .bind(Uuid::now_v7())
+            .bind("a".repeat(101))
+            .execute(&pool)
+            .await
+            .unwrap_err();
+        let db_err = err.as_database_error().expect("expected a database error");
+        // 23514 = check_violation
+        assert_eq!(db_err.code().as_deref(), Some("23514"));
+    }
 }

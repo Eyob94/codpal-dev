@@ -11,6 +11,8 @@ pub enum AppError {
     Validation(Vec<FieldError>),
     #[error("not found")]
     NotFound,
+    #[error("conflict")]
+    Conflict,
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -25,7 +27,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, body) = match self {
             AppError::Validation(fields) => (
-                StatusCode::UNPROCESSABLE_ENTITY,
+                StatusCode::BAD_REQUEST,
                 ApiError {
                     code: ErrorCode::Validation,
                     message: "Validation failed".into(),
@@ -37,6 +39,14 @@ impl IntoResponse for AppError {
                 ApiError {
                     code: ErrorCode::NotFound,
                     message: "Not found".into(),
+                    fields: vec![],
+                },
+            ),
+            AppError::Conflict => (
+                StatusCode::CONFLICT,
+                ApiError {
+                    code: ErrorCode::Conflict,
+                    message: "Conflict".into(),
                     fields: vec![],
                 },
             ),
