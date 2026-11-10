@@ -11,6 +11,15 @@ So your tests must be correct, complete, and clear.
 
 Follow the steps in order. Do not skip steps.
 
+## Golden rule: strict scope
+
+Test **only** what the requirement says. Nothing more.
+- No extra tests "just in case".
+- No extra features or behaviour, even if they look good.
+- If you think something is missing, **ask** (comment on the issue). Do not add it.
+
+Extra tests cost review time and money, and they force code nobody asked for.
+
 ---
 
 ## Step 1: Read the requirement
@@ -34,7 +43,9 @@ Each spec rule becomes one or more lines. If a rule gives no exact result, it is
 
 ## Step 3: Add the edge cases
 
-For each input, check this list. Add a behaviour line for each case that applies.
+Use this list to find edge cases **inside** a stated requirement only.
+Example: the spec says "name max 100 chars", so test 100 and 101.
+If an edge case is not covered by any requirement, **do not test it. Ask instead.**
 
 **Strings**
 - empty `""`, whitespace only `"   "`, leading/trailing spaces
