@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiFailure } from "./api";
 import type { FieldError } from "./generated/FieldError";
+import { Projects } from "./Projects";
 
 export function App() {
   const qc = useQueryClient();
@@ -70,6 +71,8 @@ export function App() {
           </li>
         ))}
       </ul>
+
+      <Projects />
     </main>
   );
 }

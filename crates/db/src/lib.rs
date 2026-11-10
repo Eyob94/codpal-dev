@@ -79,34 +79,111 @@ pub async fn complete_item(pool: &Pool, id: Uuid) -> Result<Option<Item>, sqlx::
     Ok(row.map(Into::into))
 }
 
-// ---- projects (interface only; bodies arrive in the Code issue #3) ----------
+// ---- projects ---------------------------------------------------------------
+
+#[derive(FromRow)]
+struct ProjectRow {
+    id: Uuid,
+    name: String,
+    repo_url: Option<String>,
+    description: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl From<ProjectRow> for Project {
+    fn from(r: ProjectRow) -> Self {
+        Project {
+            id: r.id,
+            name: r.name,
+            repo_url: r.repo_url,
+            description: r.description,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }
+    }
+}
+
+const PROJECT_COLS: &str = "id, name, repo_url, description, created_at, updated_at";
+
+/// Map a unique-violation (SQLSTATE 23505) to `DbError::Conflict`.
+fn map_project_err(e: sqlx::Error) -> DbError {
+    match e.as_database_error() {
+        Some(db_err) if db_err.code().as_deref() == Some("23505") => DbError::Conflict,
+        _ => DbError::Sql(e),
+    }
+}
 
 /// Insert a validated project. Unique-name violation -> `DbError::Conflict`.
-pub async fn insert_project(_pool: &Pool, _input: &CreateProject) -> Result<Project, DbError> {
-    todo!("Code issue #3")
+pub async fn insert_project(pool: &Pool, input: &CreateProject) -> Result<Project, DbError> {
+    let row: ProjectRow = sqlx::query_as(&format!(
+        "INSERT INTO projects (id, name, repo_url, description) \
+         VALUES ($1, $2, $3, $4) RETURNING {PROJECT_COLS}"
+    ))
+    .bind(Uuid::now_v7())
+    .bind(&input.name)
+    .bind(&input.repo_url)
+    .bind(&input.description)
+    .fetch_one(pool)
+    .await
+    .map_err(map_project_err)?;
+    Ok(row.into())
 }
 
-/// All projects, newest first.
-pub async fn list_projects(_pool: &Pool) -> Result<Vec<Project>, DbError> {
-    todo!("Code issue #3")
+/// All projects, newest first. `id` (UUID v7) breaks `created_at` ties.
+pub async fn list_projects(pool: &Pool) -> Result<Vec<Project>, DbError> {
+    let rows: Vec<ProjectRow> = sqlx::query_as(&format!(
+        "SELECT {PROJECT_COLS} FROM projects ORDER BY created_at DESC, id DESC"
+    ))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
-pub async fn get_project(_pool: &Pool, _id: Uuid) -> Result<Option<Project>, DbError> {
-    todo!("Code issue #3")
+pub async fn get_project(pool: &Pool, id: Uuid) -> Result<Option<Project>, DbError> {
+    let row: Option<ProjectRow> = sqlx::query_as(&format!(
+        "SELECT {PROJECT_COLS} FROM projects WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(Into::into))
 }
 
 /// Applies only the `Some` fields and bumps `updated_at`. `None` if the id is unknown.
 pub async fn update_project(
-    _pool: &Pool,
-    _id: Uuid,
-    _patch: &ProjectPatch,
+    pool: &Pool,
+    id: Uuid,
+    patch: &ProjectPatch,
 ) -> Result<Option<Project>, DbError> {
-    todo!("Code issue #3")
+    // For clearable fields, a boolean says "touch it" and the value (maybe NULL) is the new one.
+    let row: Option<ProjectRow> = sqlx::query_as(&format!(
+        "UPDATE projects SET \
+             name = COALESCE($2::text, name), \
+             repo_url = CASE WHEN $3 THEN $4::text ELSE repo_url END, \
+             description = CASE WHEN $5 THEN $6::text ELSE description END, \
+             updated_at = clock_timestamp() \
+         WHERE id = $1 RETURNING {PROJECT_COLS}"
+    ))
+    .bind(id)
+    .bind(&patch.name)
+    .bind(patch.repo_url.is_some())
+    .bind(patch.repo_url.clone().flatten())
+    .bind(patch.description.is_some())
+    .bind(patch.description.clone().flatten())
+    .fetch_optional(pool)
+    .await
+    .map_err(map_project_err)?;
+    Ok(row.map(Into::into))
 }
 
 /// `true` if a row was deleted, `false` if the id was unknown.
-pub async fn delete_project(_pool: &Pool, _id: Uuid) -> Result<bool, DbError> {
-    todo!("Code issue #3")
+pub async fn delete_project(pool: &Pool, id: Uuid) -> Result<bool, DbError> {
+    let result = sqlx::query("DELETE FROM projects WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 #[cfg(test)]
@@ -256,5 +333,21 @@ mod tests {
         let db_err = err.as_database_error().expect("expected a database error");
         // 23514 = check_violation
         assert_eq!(db_err.code().as_deref(), Some("23514"));
+    }
+
+    // ---- extra tests (added in Code issue #3) --------------------------------
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn update_rename_to_existing_name_is_conflict_in_any_case(pool: PgPool) {
+        insert_project(&pool, &new("Taken")).await.unwrap();
+        let other = insert_project(&pool, &new("Other")).await.unwrap();
+        for name in ["Taken", "taken", "TAKEN"] {
+            let err = update_project(&pool, other.id, &patch_name(name))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, DbError::Conflict), "renaming to {name}");
+        }
+        // The failed renames left the row untouched.
+        assert_eq!(get_project(&pool, other.id).await.unwrap(), Some(other));
     }
 }

@@ -1,5 +1,6 @@
 use api_types::{ApiError, ErrorCode, FieldError};
 use axum::{
+    extract::rejection::JsonRejection,
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -20,6 +21,25 @@ pub enum AppError {
 impl AppError {
     pub fn internal(e: impl std::fmt::Display) -> Self {
         AppError::Internal(e.to_string())
+    }
+}
+
+impl From<db::DbError> for AppError {
+    fn from(e: db::DbError) -> Self {
+        match e {
+            db::DbError::Conflict => AppError::Conflict,
+            db::DbError::Sql(e) => AppError::internal(e),
+        }
+    }
+}
+
+impl From<JsonRejection> for AppError {
+    /// Bad JSON / wrong shape is the client's fault: 400 with an `ApiError` body.
+    fn from(rejection: JsonRejection) -> Self {
+        AppError::Validation(vec![FieldError {
+            field: "body".into(),
+            message: rejection.body_text(),
+        }])
     }
 }
 

@@ -45,18 +45,150 @@ pub fn item_view(item: &Item) -> ItemView {
 }
 
 /// Validate and normalise a create-project intent. Returns all errors at once.
-pub fn validate_create_project(_input: &CreateProject) -> Result<CreateProject, Vec<FieldError>> {
-    todo!("Code issue #3")
+pub fn validate_create_project(input: &CreateProject) -> Result<CreateProject, Vec<FieldError>> {
+    let mut errors = Vec::new();
+    let name = check_name(&input.name, &mut errors);
+    let repo_url = input
+        .repo_url
+        .as_deref()
+        .and_then(|v| check_repo_url(v, &mut errors));
+    let description = input
+        .description
+        .as_deref()
+        .and_then(|v| check_description(v, &mut errors));
+    if errors.is_empty() {
+        Ok(CreateProject {
+            name,
+            repo_url,
+            description,
+        })
+    } else {
+        Err(errors)
+    }
 }
 
 /// Validate and normalise a partial update. All-`None` input is a valid no-op.
-pub fn validate_update_project(_input: &UpdateProject) -> Result<ProjectPatch, Vec<FieldError>> {
-    todo!("Code issue #3")
+pub fn validate_update_project(input: &UpdateProject) -> Result<ProjectPatch, Vec<FieldError>> {
+    let mut errors = Vec::new();
+    let name = input.name.as_deref().map(|v| check_name(v, &mut errors));
+    let repo_url = input
+        .repo_url
+        .as_deref()
+        .map(|v| check_repo_url(v, &mut errors));
+    let description = input
+        .description
+        .as_deref()
+        .map(|v| check_description(v, &mut errors));
+    if errors.is_empty() {
+        Ok(ProjectPatch {
+            name,
+            repo_url,
+            description,
+        })
+    } else {
+        Err(errors)
+    }
 }
 
 /// Map a domain project to the view model the API returns.
-pub fn project_view(_project: &Project) -> ProjectView {
-    todo!("Code issue #3")
+pub fn project_view(project: &Project) -> ProjectView {
+    ProjectView {
+        id: project.id.to_string(),
+        name: project.name.clone(),
+        repo_url: project.repo_url.clone(),
+        description: project.description.clone(),
+        created_at: project.created_at.to_rfc3339(),
+        updated_at: project.updated_at.to_rfc3339(),
+    }
+}
+
+fn field_error(field: &str, message: String) -> FieldError {
+    FieldError {
+        field: field.into(),
+        message,
+    }
+}
+
+/// Postgres cannot store NUL in text columns, so reject it up front.
+fn has_nul(value: &str) -> bool {
+    value.contains('\0')
+}
+
+fn check_name(raw: &str, errors: &mut Vec<FieldError>) -> String {
+    let name = raw.trim();
+    if has_nul(name) {
+        errors.push(field_error(
+            "name",
+            "Name must not contain NUL bytes".into(),
+        ));
+    } else if name.is_empty() {
+        errors.push(field_error("name", "Name is required".into()));
+    } else if name.chars().count() > MAX_PROJECT_NAME_LEN {
+        errors.push(field_error(
+            "name",
+            format!("Name must be at most {MAX_PROJECT_NAME_LEN} characters"),
+        ));
+    }
+    name.to_owned()
+}
+
+/// Empty (after trim) -> `None`. Otherwise must be a supported git remote form.
+fn check_repo_url(raw: &str, errors: &mut Vec<FieldError>) -> Option<String> {
+    let url = raw.trim();
+    if url.is_empty() {
+        return None;
+    }
+    if has_nul(url) {
+        errors.push(field_error(
+            "repo_url",
+            "Repository URL must not contain NUL bytes".into(),
+        ));
+    } else if !is_valid_repo_url(url) {
+        errors.push(field_error(
+            "repo_url",
+            "Repository URL must start with https://, http://, ssh://, or be in git@host:path form"
+                .into(),
+        ));
+    }
+    Some(url.to_owned())
+}
+
+fn is_valid_repo_url(url: &str) -> bool {
+    if url.chars().any(char::is_whitespace) {
+        return false;
+    }
+    for scheme in ["https://", "http://", "ssh://"] {
+        if let Some(rest) = url.strip_prefix(scheme) {
+            return !rest.is_empty();
+        }
+    }
+    // scp-like: git@host:path
+    if let Some(rest) = url.strip_prefix("git@") {
+        if let Some((host, path)) = rest.split_once(':') {
+            return !host.is_empty() && !host.contains('/') && !path.is_empty();
+        }
+    }
+    false
+}
+
+/// Empty (after trim) -> `None`.
+fn check_description(raw: &str, errors: &mut Vec<FieldError>) -> Option<String> {
+    let description = raw.trim();
+    if description.is_empty() {
+        return None;
+    }
+    if has_nul(description) {
+        errors.push(field_error(
+            "description",
+            "Description must not contain NUL bytes".into(),
+        ));
+    } else if description.chars().count() > MAX_PROJECT_DESCRIPTION_LEN {
+        errors.push(field_error(
+            "description",
+            format!("Description must be at most {MAX_PROJECT_DESCRIPTION_LEN} characters"),
+        ));
+    }
+    Some(description.to_owned())
 }
 
 #[cfg(test)]
