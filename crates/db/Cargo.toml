@@ -1,0 +1,12 @@
+[package]
+name = "db"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+api-types.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true

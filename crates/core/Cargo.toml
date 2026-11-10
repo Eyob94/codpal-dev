@@ -1,0 +1,13 @@
+[package]
+name = "core-logic"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# Pure domain logic. No tokio, no sqlx, no IO: must compile to wasm32.
+[dependencies]
+api-types.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true
+chrono.workspace = true

@@ -1,0 +1,6 @@
+/target
+node_modules
+web/dist
+web/src/generated/wasm
+.env
+*.tsbuildinfo

@@ -1,0 +1,15 @@
+[package]
+name = "wasm"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Opt-in bridge: exposes selected `core-logic` functions to the browser.
+[dependencies]
+api-types.workspace = true
+core-logic.workspace = true
+wasm-bindgen.workspace = true
+serde-wasm-bindgen.workspace = true
