@@ -14,9 +14,11 @@ use server::{app, AppState};
 use sqlx::PgPool;
 use tower::ServiceExt;
 
-/// The real router, backed by the given (per-test) pool. No SPA dir, no workspace dir.
+/// The real router, backed by the given (per-test) pool. No SPA dir. The workspace is a
+/// fresh temp dir that is kept for the life of the test, so nothing touches the real filesystem.
 pub fn test_app(pool: PgPool) -> Router {
-    test_app_in(pool, Path::new("/nonexistent-workspace"))
+    let dir = tempfile::TempDir::new().unwrap().keep();
+    test_app_in(pool, &dir)
 }
 
 /// The real router with a given workspace dir (use a per-test temp dir).
