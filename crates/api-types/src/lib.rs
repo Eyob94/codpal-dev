@@ -17,12 +17,49 @@ pub struct Item {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Project {
+    pub id: Uuid,
+    pub name: String,
+    pub repo_url: Option<String>,
+    pub description: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Validated partial update, produced by core. `None` = leave the field alone;
+/// `Some(None)` = clear it; `Some(Some(v))` = set it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectPatch {
+    pub name: Option<String>,
+    pub repo_url: Option<Option<String>>,
+    pub description: Option<Option<String>>,
+}
+
 // ---- intents (user actions sent to Rust) ----------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct CreateItem {
     pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreateProject {
+    pub name: String,
+    pub repo_url: Option<String>,
+    pub description: Option<String>,
+}
+
+/// Every field optional. An empty string clears `repo_url` / `description`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UpdateProject {
+    pub name: Option<String>,
+    pub repo_url: Option<String>,
+    pub description: Option<String>,
 }
 
 // ---- view models (ready-to-render, returned to React) ---------------------
@@ -34,6 +71,19 @@ pub struct ItemView {
     pub label: String,
     pub badge: Badge,
     pub can_complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ProjectView {
+    pub id: String,
+    pub name: String,
+    pub repo_url: Option<String>,
+    pub description: Option<String>,
+    /// RFC 3339, UTC.
+    pub created_at: String,
+    /// RFC 3339, UTC.
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
@@ -52,6 +102,7 @@ pub enum Badge {
 pub enum ErrorCode {
     Validation,
     NotFound,
+    Conflict,
     Internal,
 }
 
