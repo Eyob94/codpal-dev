@@ -16,6 +16,9 @@ async fn main() -> anyhow::Result<()> {
         db::migrate(&pool).await?;
     }
 
+    tokio::fs::create_dir_all(&cfg.workspace_dir).await?;
+    server::recover_interrupted_clones(&pool, &cfg.workspace_dir).await?;
+
     let listener = tokio::net::TcpListener::bind(cfg.bind_addr).await?;
     tracing::info!("listening on {}", cfg.bind_addr);
     axum::serve(

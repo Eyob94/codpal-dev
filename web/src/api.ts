@@ -32,5 +32,6 @@ export const api = {
     request<ProjectView>("/projects", { method: "POST", body: JSON.stringify(intent) }),
   updateProject: (id: string, intent: UpdateProject) =>
     request<ProjectView>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(intent) }),
+  retryProject: (id: string) => request<ProjectView>(`/projects/${id}/retry`, { method: "POST" }),
   deleteProject: (id: string) => request<void>(`/projects/${id}`, { method: "DELETE" }),
 };

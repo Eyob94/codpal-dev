@@ -24,10 +24,20 @@ pub struct AppState {
 /// Startup recovery: every `cloning` project becomes `failed` ("interrupted"), and its
 /// half-cloned folder under `workspace_dir` is removed.
 pub async fn recover_interrupted_clones(
-    _pool: &db::Pool,
-    _workspace_dir: &Path,
+    pool: &db::Pool,
+    workspace_dir: &Path,
 ) -> anyhow::Result<()> {
-    todo!()
+    let cloning: Vec<_> = db::list_projects(pool)
+        .await?
+        .into_iter()
+        .filter(|p| p.status == api_types::ProjectStatus::Cloning)
+        .map(|p| p.id)
+        .collect();
+    db::mark_interrupted_clones(pool).await?;
+    for id in cloning {
+        workspace::remove_project_dir(&core_logic::project_dir(workspace_dir, id)).await?;
+    }
+    Ok(())
 }
 
 pub fn app(state: AppState, web_dist: &Path) -> Router {

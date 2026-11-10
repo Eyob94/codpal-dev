@@ -1,4 +1,7 @@
-use api_types::{CreateItem, CreateProject, Health, ItemView, ProjectView, UpdateProject};
+use api_types::{
+    CreateItem, CreateProject, Health, ItemView, Project, ProjectSource, ProjectStatus,
+    ProjectView, UpdateProject,
+};
 use axum::{
     extract::{rejection::JsonRejection, Path, State},
     http::StatusCode,
@@ -6,6 +9,7 @@ use axum::{
     Json, Router,
 };
 use uuid::Uuid;
+use workspace::WorkspaceError;
 
 use crate::{error::AppError, AppState};
 
@@ -81,11 +85,71 @@ async fn create_project(
 ) -> Result<(StatusCode, Json<ProjectView>), AppError> {
     let Json(input) = body?;
     let input = core_logic::validate_create_project(&input).map_err(AppError::Validation)?;
-    let project = db::insert_project(&s.pool, &input).await?;
+    let is_git = input.repo_url.is_some();
+    let project = db::insert_project_row(
+        &s.pool,
+        &db::NewProject {
+            name: input.name,
+            repo_url: input.repo_url,
+            description: input.description,
+            source: if is_git {
+                ProjectSource::Git
+            } else {
+                ProjectSource::Scratch
+            },
+            status: if is_git {
+                ProjectStatus::Cloning
+            } else {
+                ProjectStatus::Ready
+            },
+            status_message: None,
+        },
+    )
+    .await?;
+    if is_git {
+        spawn_clone(&s, &project);
+    } else if let Err(e) =
+        workspace::init_scratch(&core_logic::project_dir(&s.workspace_dir, project.id)).await
+    {
+        // No row is left behind when the folder or `git init` fails.
+        let _ = db::delete_project(&s.pool, project.id).await;
+        return Err(AppError::internal(e));
+    }
     Ok((
         StatusCode::CREATED,
         Json(core_logic::project_view(&project)),
     ))
+}
+
+/// Clone `project.repo_url` in the background, then set `ready` or `failed` + message.
+fn spawn_clone(s: &AppState, project: &Project) {
+    let Some(url) = project.repo_url.clone() else {
+        return;
+    };
+    let pool = s.pool.clone();
+    let dir = core_logic::project_dir(&s.workspace_dir, project.id);
+    let timeout = s.clone_timeout;
+    let id = project.id;
+    tokio::spawn(async move {
+        let (status, message) = match workspace::clone_repo(&url, &dir, timeout).await {
+            Ok(()) => (ProjectStatus::Ready, None),
+            Err(e) => {
+                tracing::warn!(project = %id, error = %e, "clone failed");
+                let message = match e {
+                    WorkspaceError::Timeout => "clone timed out".to_string(),
+                    WorkspaceError::Git(m) => m,
+                    _ => "clone failed".to_string(),
+                };
+                (
+                    ProjectStatus::Failed,
+                    Some(core_logic::cap_status_message(&message)),
+                )
+            }
+        };
+        if let Err(e) = db::set_status(&pool, id, status, message.as_deref()).await {
+            tracing::error!(project = %id, error = %e, "could not save clone status");
+        }
+    });
 }
 
 async fn get_project(
@@ -114,17 +178,34 @@ async fn update_project(
 
 /// Clone again. Only for a `git` project in `failed`. 202 with the view, else 409.
 async fn retry_project(
-    State(_s): State<AppState>,
-    Path(_id): Path<String>,
+    State(s): State<AppState>,
+    Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<ProjectView>), AppError> {
-    todo!()
+    let project = db::get_project(&s.pool, parse_id(&id)?)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    if !core_logic::can_retry(&project) || project.repo_url.is_none() {
+        return Err(AppError::Conflict);
+    }
+    let project = db::set_status(&s.pool, project.id, ProjectStatus::Cloning, None)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    spawn_clone(&s, &project);
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(core_logic::project_view(&project)),
+    ))
 }
 
 async fn delete_project(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    if db::delete_project(&s.pool, parse_id(&id)?).await? {
+    let id = parse_id(&id)?;
+    if db::delete_project(&s.pool, id).await? {
+        workspace::remove_project_dir(&core_logic::project_dir(&s.workspace_dir, id))
+            .await
+            .map_err(AppError::internal)?;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound)

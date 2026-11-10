@@ -143,23 +143,70 @@ pub struct NewProject {
 }
 
 /// Insert a project row with explicit `source`, `status` and `status_message`.
-pub async fn insert_project_row(_pool: &Pool, _input: &NewProject) -> Result<Project, DbError> {
-    todo!()
+pub async fn insert_project_row(pool: &Pool, input: &NewProject) -> Result<Project, DbError> {
+    let row: ProjectRow = sqlx::query_as(&format!(
+        "INSERT INTO projects (id, name, repo_url, description, source, status, status_message) \
+         VALUES ($1, $2, $3, $4, $5::project_source, $6::project_status, $7) \
+         RETURNING {PROJECT_COLS}"
+    ))
+    .bind(Uuid::now_v7())
+    .bind(&input.name)
+    .bind(&input.repo_url)
+    .bind(&input.description)
+    .bind(source_str(input.source))
+    .bind(status_str(input.status))
+    .bind(&input.status_message)
+    .fetch_one(pool)
+    .await
+    .map_err(map_project_err)?;
+    Ok(row.into())
+}
+
+fn source_str(s: ProjectSource) -> &'static str {
+    match s {
+        ProjectSource::Scratch => "scratch",
+        ProjectSource::Git => "git",
+    }
+}
+
+fn status_str(s: ProjectStatus) -> &'static str {
+    match s {
+        ProjectStatus::Cloning => "cloning",
+        ProjectStatus::Ready => "ready",
+        ProjectStatus::Failed => "failed",
+    }
 }
 
 /// Set `status` and `status_message` and bump `updated_at`. `None` if the id is unknown.
 pub async fn set_status(
-    _pool: &Pool,
-    _id: Uuid,
-    _status: ProjectStatus,
-    _message: Option<&str>,
+    pool: &Pool,
+    id: Uuid,
+    status: ProjectStatus,
+    message: Option<&str>,
 ) -> Result<Option<Project>, DbError> {
-    todo!()
+    let row: Option<ProjectRow> = sqlx::query_as(&format!(
+        "UPDATE projects SET status = $2::project_status, status_message = $3, \
+             updated_at = clock_timestamp() \
+         WHERE id = $1 RETURNING {PROJECT_COLS}"
+    ))
+    .bind(id)
+    .bind(status_str(status))
+    .bind(message)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(Into::into))
 }
 
 /// Mark every `cloning` project `failed` with message "interrupted". Other rows are untouched.
-pub async fn mark_interrupted_clones(_pool: &Pool) -> Result<u64, DbError> {
-    todo!()
+pub async fn mark_interrupted_clones(pool: &Pool) -> Result<u64, DbError> {
+    let result = sqlx::query(
+        "UPDATE projects SET status = 'failed', status_message = 'interrupted', \
+             updated_at = clock_timestamp() \
+         WHERE status = 'cloning'",
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 /// Map a unique-violation (SQLSTATE 23505) to `DbError::Conflict`.

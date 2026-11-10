@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use api_types::{
     Badge, CreateItem, CreateProject, FieldError, Item, ItemView, Project, ProjectPatch,
-    ProjectView, UpdateProject,
+    ProjectSource, ProjectStatus, ProjectView, UpdateProject,
 };
 use uuid::Uuid;
 
@@ -15,18 +15,21 @@ pub const MAX_PROJECT_DESCRIPTION_LEN: usize = 1000;
 pub const MAX_STATUS_MESSAGE_LEN: usize = 200;
 
 /// Folder of one project: `<root>/<project id>`. Built from the UUID only.
-pub fn project_dir(_root: &Path, _id: Uuid) -> PathBuf {
-    todo!()
+pub fn project_dir(root: &Path, id: Uuid) -> PathBuf {
+    root.join(id.to_string())
 }
 
 /// Retry is offered only for a `git` project whose clone failed.
-pub fn can_retry(_project: &Project) -> bool {
-    todo!()
+pub fn can_retry(project: &Project) -> bool {
+    project.source == ProjectSource::Git && project.status == ProjectStatus::Failed
 }
 
 /// Cap a status message at `MAX_STATUS_MESSAGE_LEN` characters and replace newlines.
-pub fn cap_status_message(_raw: &str) -> String {
-    todo!()
+pub fn cap_status_message(raw: &str) -> String {
+    raw.chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .take(MAX_STATUS_MESSAGE_LEN)
+        .collect()
 }
 
 /// Validate and normalise a create-item intent.
@@ -119,8 +122,7 @@ pub fn project_view(project: &Project) -> ProjectView {
         source: project.source,
         status: project.status,
         status_message: project.status_message.clone(),
-        // TODO(#6 stub): wire to `can_retry(project)` once it is implemented.
-        can_retry: false,
+        can_retry: can_retry(project),
         created_at: project.created_at.to_rfc3339(),
         updated_at: project.updated_at.to_rfc3339(),
     }
