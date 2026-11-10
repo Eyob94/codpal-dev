@@ -1,4 +1,4 @@
-use std::{env, net::SocketAddr, path::PathBuf};
+use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -6,6 +6,10 @@ pub struct Config {
     pub bind_addr: SocketAddr,
     pub web_dist: PathBuf,
     pub run_migrations: bool,
+    /// Root folder for all project folders (`CODPAL_WORKSPACE_DIR`, default `./workspace`).
+    pub workspace_dir: PathBuf,
+    /// Git clone timeout (`CODPAL_CLONE_TIMEOUT_SECS`, default 600).
+    pub clone_timeout: Duration,
 }
 
 impl Config {
@@ -21,6 +25,16 @@ impl Config {
             run_migrations: env::var("RUN_MIGRATIONS")
                 .map(|v| v != "false")
                 .unwrap_or(true),
+            workspace_dir: env::var("CODPAL_WORKSPACE_DIR")
+                .unwrap_or_else(|_| "./workspace".into())
+                .into(),
+            clone_timeout: Duration::from_secs(
+                env::var("CODPAL_CLONE_TIMEOUT_SECS")
+                    .ok()
+                    .map(|v| v.parse())
+                    .transpose()?
+                    .unwrap_or(600),
+            ),
         })
     }
 }

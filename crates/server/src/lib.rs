@@ -2,7 +2,7 @@ pub mod config;
 pub mod error;
 pub mod routes;
 
-use std::path::Path;
+use std::{path::Path, time::Duration};
 
 use axum::Router;
 use tower_http::{
@@ -15,6 +15,19 @@ use tower_http::{
 #[derive(Clone)]
 pub struct AppState {
     pub pool: db::Pool,
+    /// Root folder for project folders.
+    pub workspace_dir: std::path::PathBuf,
+    /// Timeout for a git clone.
+    pub clone_timeout: Duration,
+}
+
+/// Startup recovery: every `cloning` project becomes `failed` ("interrupted"), and its
+/// half-cloned folder under `workspace_dir` is removed.
+pub async fn recover_interrupted_clones(
+    _pool: &db::Pool,
+    _workspace_dir: &Path,
+) -> anyhow::Result<()> {
+    todo!()
 }
 
 pub fn app(state: AppState, web_dist: &Path) -> Router {

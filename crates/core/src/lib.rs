@@ -1,14 +1,33 @@
 //! All business logic lives here. Pure functions only (no IO, no async), so the
 //! exact same code runs in the server and, through `crates/wasm`, in the browser.
 
+use std::path::{Path, PathBuf};
+
 use api_types::{
     Badge, CreateItem, CreateProject, FieldError, Item, ItemView, Project, ProjectPatch,
     ProjectView, UpdateProject,
 };
+use uuid::Uuid;
 
 pub const MAX_TITLE_LEN: usize = 120;
 pub const MAX_PROJECT_NAME_LEN: usize = 100;
 pub const MAX_PROJECT_DESCRIPTION_LEN: usize = 1000;
+pub const MAX_STATUS_MESSAGE_LEN: usize = 200;
+
+/// Folder of one project: `<root>/<project id>`. Built from the UUID only.
+pub fn project_dir(_root: &Path, _id: Uuid) -> PathBuf {
+    todo!()
+}
+
+/// Retry is offered only for a `git` project whose clone failed.
+pub fn can_retry(_project: &Project) -> bool {
+    todo!()
+}
+
+/// Cap a status message at `MAX_STATUS_MESSAGE_LEN` characters and replace newlines.
+pub fn cap_status_message(_raw: &str) -> String {
+    todo!()
+}
 
 /// Validate and normalise a create-item intent.
 pub fn validate_create_item(input: &CreateItem) -> Result<CreateItem, Vec<FieldError>> {
@@ -97,6 +116,11 @@ pub fn project_view(project: &Project) -> ProjectView {
         name: project.name.clone(),
         repo_url: project.repo_url.clone(),
         description: project.description.clone(),
+        source: project.source,
+        status: project.status,
+        status_message: project.status_message.clone(),
+        // TODO(#6 stub): wire to `can_retry(project)` once it is implemented.
+        can_retry: false,
         created_at: project.created_at.to_rfc3339(),
         updated_at: project.updated_at.to_rfc3339(),
     }
@@ -194,6 +218,7 @@ fn check_description(raw: &str, errors: &mut Vec<FieldError>) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use api_types::{ProjectSource, ProjectStatus};
     use chrono::{DateTime, Utc};
     use uuid::Uuid;
 
@@ -554,6 +579,9 @@ mod tests {
             name: "Alpha".into(),
             repo_url: repo_url.map(Into::into),
             description: description.map(Into::into),
+            source: ProjectSource::Scratch,
+            status: ProjectStatus::Ready,
+            status_message: None,
             created_at: at("2026-01-02T03:04:05Z"),
             updated_at: at("2026-01-02T04:05:06.123456Z"),
         }
@@ -581,5 +609,89 @@ mod tests {
         let view = project_view(&sample_project(None, None));
         assert_eq!(view.repo_url, None);
         assert_eq!(view.description, None);
+    }
+
+    // ---- A. workspace: project folder, retry rule, view, status message -------
+
+    fn project_with(
+        source: ProjectSource,
+        status: ProjectStatus,
+        message: Option<&str>,
+    ) -> Project {
+        Project {
+            source,
+            status,
+            status_message: message.map(Into::into),
+            ..sample_project(Some("https://github.com/a/b"), None)
+        }
+    }
+
+    #[test]
+    fn project_dir_is_root_joined_with_id() {
+        let id = Uuid::parse_str("0190f2a4-7c3b-7d4e-8f5a-1b2c3d4e5f60").unwrap();
+        assert_eq!(
+            project_dir(Path::new("/srv/ws"), id),
+            Path::new("/srv/ws").join("0190f2a4-7c3b-7d4e-8f5a-1b2c3d4e5f60"),
+        );
+    }
+
+    #[test]
+    fn project_dir_never_contains_name_or_url() {
+        let p = Project {
+            name: "../../etc".into(),
+            ..sample_project(Some("https://evil.example/../../x.git"), None)
+        };
+        let dir = project_dir(Path::new("/srv/ws"), p.id);
+        assert_eq!(dir, Path::new("/srv/ws").join(p.id.to_string()));
+    }
+
+    #[test]
+    fn can_retry_only_for_git_failed() {
+        assert!(can_retry(&project_with(
+            ProjectSource::Git,
+            ProjectStatus::Failed,
+            Some("x")
+        )));
+        assert!(!can_retry(&project_with(
+            ProjectSource::Git,
+            ProjectStatus::Cloning,
+            None
+        )));
+        assert!(!can_retry(&project_with(
+            ProjectSource::Git,
+            ProjectStatus::Ready,
+            None
+        )));
+        assert!(!can_retry(&project_with(
+            ProjectSource::Scratch,
+            ProjectStatus::Failed,
+            Some("x")
+        )));
+    }
+
+    #[test]
+    fn view_maps_source_status_status_message_and_can_retry() {
+        let view = project_view(&project_with(
+            ProjectSource::Git,
+            ProjectStatus::Failed,
+            Some("boom"),
+        ));
+        assert_eq!(view.source, ProjectSource::Git);
+        assert_eq!(view.status, ProjectStatus::Failed);
+        assert_eq!(view.status_message.as_deref(), Some("boom"));
+        assert!(view.can_retry);
+    }
+
+    #[test]
+    fn cap_status_message_cuts_at_200_chars() {
+        assert_eq!(cap_status_message(&"🙂".repeat(201)), "🙂".repeat(200));
+    }
+
+    #[test]
+    fn cap_status_message_replaces_newlines_with_spaces() {
+        assert_eq!(
+            cap_status_message("line1\nline2\rline3"),
+            "line1 line2 line3"
+        );
     }
 }

@@ -1,6 +1,8 @@
+#![allow(dead_code)] // each test binary uses a different subset of these helpers
+
 //! Shared helpers for API tests: build the real router on a test DB and send requests.
 
-use std::path::Path;
+use std::{path::Path, time::Duration};
 
 use axum::{
     body::Body,
@@ -12,9 +14,21 @@ use server::{app, AppState};
 use sqlx::PgPool;
 use tower::ServiceExt;
 
-/// The real router, backed by the given (per-test) pool. No SPA dir.
+/// The real router, backed by the given (per-test) pool. No SPA dir, no workspace dir.
 pub fn test_app(pool: PgPool) -> Router {
-    app(AppState { pool }, Path::new("/nonexistent-web-dist"))
+    test_app_in(pool, Path::new("/nonexistent-workspace"))
+}
+
+/// The real router with a given workspace dir (use a per-test temp dir).
+pub fn test_app_in(pool: PgPool, workspace_dir: &Path) -> Router {
+    app(
+        AppState {
+            pool,
+            workspace_dir: workspace_dir.to_path_buf(),
+            clone_timeout: Duration::from_secs(600),
+        },
+        Path::new("/nonexistent-web-dist"),
+    )
 }
 
 /// Send one request. Returns the status and the body as JSON

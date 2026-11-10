@@ -21,6 +21,7 @@ pub fn api() -> Router<AppState> {
                 .patch(update_project)
                 .delete(delete_project),
         )
+        .route("/projects/{id}/retry", post(retry_project))
 }
 
 // Handlers stay thin: parse -> call core/db -> map to view model.
@@ -109,6 +110,14 @@ async fn update_project(
         .await?
         .ok_or(AppError::NotFound)?;
     Ok(Json(core_logic::project_view(&project)))
+}
+
+/// Clone again. Only for a `git` project in `failed`. 202 with the view, else 409.
+async fn retry_project(
+    State(_s): State<AppState>,
+    Path(_id): Path<String>,
+) -> Result<(StatusCode, Json<ProjectView>), AppError> {
+    todo!()
 }
 
 async fn delete_project(

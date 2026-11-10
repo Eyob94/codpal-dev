@@ -1,0 +1,13 @@
+[package]
+name = "workspace"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# Filesystem and git (via the `git` CLI) for project folders.
+[dependencies]
+tokio.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

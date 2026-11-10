@@ -7,7 +7,7 @@ publish.workspace = true
 # Pure domain logic. No tokio, no sqlx, no IO: must compile to wasm32.
 [dependencies]
 api-types.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
-uuid.workspace = true
 chrono.workspace = true
