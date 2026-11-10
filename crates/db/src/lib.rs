@@ -1,6 +1,6 @@
 //! Postgres access. Runtime-checked sqlx queries (no live DB needed to compile).
 
-use api_types::{CreateProject, Item, Project, ProjectPatch};
+use api_types::{CreateProject, Item, Project, ProjectPatch, ProjectSource, ProjectStatus};
 use chrono::{DateTime, Utc};
 use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
 use uuid::Uuid;
@@ -87,8 +87,28 @@ struct ProjectRow {
     name: String,
     repo_url: Option<String>,
     description: Option<String>,
+    source: String,
+    status: String,
+    status_message: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+}
+
+fn parse_source(raw: &str) -> ProjectSource {
+    match raw {
+        "scratch" => ProjectSource::Scratch,
+        "git" => ProjectSource::Git,
+        other => panic!("unknown project source in database: {other}"),
+    }
+}
+
+fn parse_status(raw: &str) -> ProjectStatus {
+    match raw {
+        "cloning" => ProjectStatus::Cloning,
+        "ready" => ProjectStatus::Ready,
+        "failed" => ProjectStatus::Failed,
+        other => panic!("unknown project status in database: {other}"),
+    }
 }
 
 impl From<ProjectRow> for Project {
@@ -98,13 +118,96 @@ impl From<ProjectRow> for Project {
             name: r.name,
             repo_url: r.repo_url,
             description: r.description,
+            source: parse_source(&r.source),
+            status: parse_status(&r.status),
+            status_message: r.status_message,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
     }
 }
 
-const PROJECT_COLS: &str = "id, name, repo_url, description, created_at, updated_at";
+// Enum columns are read as text so the row maps to plain Rust enums.
+const PROJECT_COLS: &str = "id, name, repo_url, description, source::text AS source, \
+     status::text AS status, status_message, created_at, updated_at";
+
+/// Everything a new project row needs. Used by the workspace flows, which set `source`
+/// and `status` themselves.
+pub struct NewProject {
+    pub name: String,
+    pub repo_url: Option<String>,
+    pub description: Option<String>,
+    pub source: ProjectSource,
+    pub status: ProjectStatus,
+    pub status_message: Option<String>,
+}
+
+/// Insert a project row with explicit `source`, `status` and `status_message`.
+pub async fn insert_project_row(pool: &Pool, input: &NewProject) -> Result<Project, DbError> {
+    let row: ProjectRow = sqlx::query_as(&format!(
+        "INSERT INTO projects (id, name, repo_url, description, source, status, status_message) \
+         VALUES ($1, $2, $3, $4, $5::project_source, $6::project_status, $7) \
+         RETURNING {PROJECT_COLS}"
+    ))
+    .bind(Uuid::now_v7())
+    .bind(&input.name)
+    .bind(&input.repo_url)
+    .bind(&input.description)
+    .bind(source_str(input.source))
+    .bind(status_str(input.status))
+    .bind(&input.status_message)
+    .fetch_one(pool)
+    .await
+    .map_err(map_project_err)?;
+    Ok(row.into())
+}
+
+fn source_str(s: ProjectSource) -> &'static str {
+    match s {
+        ProjectSource::Scratch => "scratch",
+        ProjectSource::Git => "git",
+    }
+}
+
+fn status_str(s: ProjectStatus) -> &'static str {
+    match s {
+        ProjectStatus::Cloning => "cloning",
+        ProjectStatus::Ready => "ready",
+        ProjectStatus::Failed => "failed",
+    }
+}
+
+/// Set `status` and `status_message` and bump `updated_at`. `None` if the id is unknown.
+pub async fn set_status(
+    pool: &Pool,
+    id: Uuid,
+    status: ProjectStatus,
+    message: Option<&str>,
+) -> Result<Option<Project>, DbError> {
+    let row: Option<ProjectRow> = sqlx::query_as(&format!(
+        "UPDATE projects SET status = $2::project_status, status_message = $3, \
+             updated_at = clock_timestamp() \
+         WHERE id = $1 RETURNING {PROJECT_COLS}"
+    ))
+    .bind(id)
+    .bind(status_str(status))
+    .bind(message)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(Into::into))
+}
+
+/// Mark every `cloning` project `failed` with message "interrupted". Other rows are untouched.
+pub async fn mark_interrupted_clones(pool: &Pool) -> Result<u64, DbError> {
+    let result = sqlx::query(
+        "UPDATE projects SET status = 'failed', status_message = 'interrupted', \
+             updated_at = clock_timestamp() \
+         WHERE status = 'cloning'",
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
 
 /// Map a unique-violation (SQLSTATE 23505) to `DbError::Conflict`.
 fn map_project_err(e: sqlx::Error) -> DbError {
@@ -349,5 +452,83 @@ mod tests {
         }
         // The failed renames left the row untouched.
         assert_eq!(get_project(&pool, other.id).await.unwrap(), Some(other));
+    }
+
+    // ---- C. workspace storage tests (real Postgres, fresh DB per test) --------
+
+    /// Arrange a row with raw SQL so these tests only exercise the function under test.
+    async fn raw_insert(
+        pool: &PgPool,
+        name: &str,
+        source: &str,
+        status: &str,
+        message: Option<&str>,
+    ) -> Uuid {
+        let id = Uuid::now_v7();
+        sqlx::query(&format!(
+            "INSERT INTO projects (id, name, source, status, status_message) \
+             VALUES ($1, $2, '{source}', '{status}', $3)"
+        ))
+        .bind(id)
+        .bind(name)
+        .bind(message)
+        .execute(pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn new_columns_are_saved_and_read_back(pool: PgPool) {
+        let created = insert_project_row(
+            &pool,
+            &NewProject {
+                name: "Imported".into(),
+                repo_url: Some("https://github.com/a/b".into()),
+                description: None,
+                source: ProjectSource::Git,
+                status: ProjectStatus::Cloning,
+                status_message: None,
+            },
+        )
+        .await
+        .unwrap();
+        let fetched = get_project(&pool, created.id).await.unwrap().unwrap();
+        assert_eq!(fetched.source, ProjectSource::Git);
+        assert_eq!(fetched.status, ProjectStatus::Cloning);
+        assert_eq!(fetched.status_message, None);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn set_status_updates_status_and_message_and_bumps_updated_at(pool: PgPool) {
+        let id = raw_insert(&pool, "Alpha", "git", "cloning", None).await;
+        let before = get_project(&pool, id).await.unwrap().unwrap();
+        let updated = set_status(&pool, id, ProjectStatus::Failed, Some("clone timed out"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.status, ProjectStatus::Failed);
+        assert_eq!(updated.status_message.as_deref(), Some("clone timed out"));
+        assert!(updated.updated_at > before.updated_at);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn mark_interrupted_clones_fails_only_cloning_rows(pool: PgPool) {
+        let cloning = raw_insert(&pool, "Cloning", "git", "cloning", None).await;
+        let ready = raw_insert(&pool, "Ready", "scratch", "ready", None).await;
+        let failed = raw_insert(&pool, "Failed", "git", "failed", Some("clone timed out")).await;
+        mark_interrupted_clones(&pool).await.unwrap();
+
+        let cloning = get_project(&pool, cloning).await.unwrap().unwrap();
+        assert_eq!(cloning.status, ProjectStatus::Failed);
+        assert_eq!(cloning.status_message.as_deref(), Some("interrupted"));
+
+        let ready = get_project(&pool, ready).await.unwrap().unwrap();
+        assert_eq!(ready.status, ProjectStatus::Ready);
+        assert_eq!(ready.status_message, None);
+
+        let failed = get_project(&pool, failed).await.unwrap().unwrap();
+        assert_eq!(failed.status, ProjectStatus::Failed);
+        assert_eq!(failed.status_message.as_deref(), Some("clone timed out"));
     }
 }

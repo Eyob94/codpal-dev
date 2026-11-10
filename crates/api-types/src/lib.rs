@@ -17,6 +17,23 @@ pub struct Item {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ProjectSource {
+    Scratch,
+    Git,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ProjectStatus {
+    Cloning,
+    Ready,
+    Failed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Project {
@@ -24,6 +41,9 @@ pub struct Project {
     pub name: String,
     pub repo_url: Option<String>,
     pub description: Option<String>,
+    pub source: ProjectSource,
+    pub status: ProjectStatus,
+    pub status_message: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -80,6 +100,12 @@ pub struct ProjectView {
     pub name: String,
     pub repo_url: Option<String>,
     pub description: Option<String>,
+    pub source: ProjectSource,
+    pub status: ProjectStatus,
+    /// Short reason when `status` is `failed`.
+    pub status_message: Option<String>,
+    /// True only for a `git` project whose clone failed.
+    pub can_retry: bool,
     /// RFC 3339, UTC.
     pub created_at: String,
     /// RFC 3339, UTC.

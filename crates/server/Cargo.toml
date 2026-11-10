@@ -12,6 +12,7 @@ path = "src/main.rs"
 api-types.workspace = true
 core-logic.workspace = true
 db.workspace = true
+workspace.workspace = true
 tokio.workspace = true
 axum.workspace = true
 tower.workspace = true
@@ -27,3 +28,4 @@ dotenvy.workspace = true
 
 [dev-dependencies]
 sqlx.workspace = true
+tempfile = "3"

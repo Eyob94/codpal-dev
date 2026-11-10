@@ -44,6 +44,7 @@ function ProjectForm(props: {
   pending: boolean;
   onSubmit: (v: FormValues) => void;
   onCancel?: () => void;
+  showUrl?: boolean;
 }) {
   const [v, setV] = useState(props.initial);
   const input = "w-full rounded border px-3 py-2";
@@ -62,13 +63,15 @@ function ProjectForm(props: {
         placeholder="Name"
         aria-label="Name"
       />
-      <input
-        className={input}
-        value={v.repo_url}
-        onChange={(e) => setV({ ...v, repo_url: e.target.value })}
-        placeholder="Repository URL (optional)"
-        aria-label="Repository URL"
-      />
+      {(props.showUrl ?? true) && (
+        <input
+          className={input}
+          value={v.repo_url}
+          onChange={(e) => setV({ ...v, repo_url: e.target.value })}
+          placeholder="Repository URL"
+          aria-label="Repository URL"
+        />
+      )}
       <textarea
         className={input}
         value={v.description}
@@ -95,6 +98,16 @@ function ProjectForm(props: {
   );
 }
 
+function StatusBadge({ project }: { project: ProjectView }) {
+  const label = { cloning: "Cloning", ready: "Ready", failed: "Failed" }[project.status];
+  const color = {
+    cloning: "bg-yellow-100 text-yellow-800",
+    ready: "bg-green-100 text-green-800",
+    failed: "bg-red-100 text-red-800",
+  }[project.status];
+  return <span className={`rounded px-2 py-0.5 text-xs font-medium ${color}`}>{label}</span>;
+}
+
 const EMPTY: FormValues = { name: "", repo_url: "", description: "" };
 
 function ProjectRow({ project }: { project: ProjectView }) {
@@ -114,6 +127,7 @@ function ProjectRow({ project }: { project: ProjectView }) {
     },
     onError,
   });
+  const retry = useMutation({ mutationFn: () => api.retryProject(project.id), onSuccess: refresh, onError });
   const remove = useMutation({ mutationFn: () => api.deleteProject(project.id), onSuccess: refresh, onError });
 
   if (editing) {
@@ -142,11 +156,21 @@ function ProjectRow({ project }: { project: ProjectView }) {
     <li className="rounded border p-3">
       <div className="flex items-start justify-between gap-2">
         <div>
-          <p className="font-medium">{project.name}</p>
+          <p className="font-medium">
+            {project.name} <StatusBadge project={project} />
+          </p>
+          {project.status === "failed" && project.status_message && (
+            <p className="text-sm text-red-600">{project.status_message}</p>
+          )}
           {project.repo_url && <p className="text-sm text-gray-600">{project.repo_url}</p>}
           {project.description && <p className="mt-1 text-sm">{project.description}</p>}
         </div>
         <div className="flex gap-3 text-sm">
+          {project.can_retry && (
+            <button className="underline" onClick={() => retry.mutate()} disabled={retry.isPending}>
+              Retry
+            </button>
+          )}
           <button className="underline" onClick={() => setEditing(true)}>
             Edit
           </button>
@@ -160,40 +184,85 @@ function ProjectRow({ project }: { project: ProjectView }) {
   );
 }
 
+type Tab = "git" | "scratch";
+
 export function Projects() {
   const qc = useQueryClient();
   const { errors, setErrors, onError } = useFieldErrors();
   const [formKey, setFormKey] = useState(0);
-  const projects = useQuery({ queryKey: ["projects"], queryFn: api.listProjects });
+  const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<Tab>("git");
+  const projects = useQuery({
+    queryKey: ["projects"],
+    queryFn: api.listProjects,
+    // Poll every 2s while any project is cloning; stop when none are.
+    refetchInterval: (query) =>
+      query.state.data?.some((p) => p.status === "cloning") ? 2000 : false,
+  });
 
   const create = useMutation({
     mutationFn: (v: FormValues) =>
       api.createProject({
         name: v.name,
-        repo_url: v.repo_url || null,
+        repo_url: tab === "git" ? v.repo_url || null : null,
         description: v.description || null,
       }),
     onSuccess: () => {
       setErrors([]);
       setFormKey((k) => k + 1); // reset the form
+      setOpen(false);
       void qc.invalidateQueries({ queryKey: ["projects"] });
     },
     onError,
   });
 
+  const tabClass = (t: Tab) => `px-3 py-1 ${tab === t ? "border-b-2 border-black font-medium" : ""}`;
+
   return (
     <section className="mt-10">
-      <h2 className="mb-4 text-xl font-semibold">Projects</h2>
-      <div className="mb-6">
-        <ProjectForm
-          key={formKey}
-          initial={EMPTY}
-          submitLabel="Create project"
-          errors={errors}
-          pending={create.isPending}
-          onSubmit={(v) => create.mutate(v)}
-        />
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-xl font-semibold">Projects</h2>
+        {!open && (
+          <button className="rounded bg-black px-4 py-2 text-white" onClick={() => setOpen(true)}>
+            New project
+          </button>
+        )}
       </div>
+      {open && (
+        <div className="mb-6">
+          <div className="mb-3 flex gap-2" role="tablist">
+            <button
+              role="tab"
+              aria-selected={tab === "git"}
+              className={tabClass("git")}
+              onClick={() => setTab("git")}
+            >
+              Import from Git
+            </button>
+            <button
+              role="tab"
+              aria-selected={tab === "scratch"}
+              className={tabClass("scratch")}
+              onClick={() => setTab("scratch")}
+            >
+              Start from scratch
+            </button>
+          </div>
+          <ProjectForm
+            key={`${formKey}:${tab}`}
+            initial={EMPTY}
+            submitLabel={tab === "git" ? "Import project" : "Create project"}
+            errors={errors}
+            pending={create.isPending}
+            showUrl={tab === "git"}
+            onSubmit={(v) => create.mutate(v)}
+            onCancel={() => {
+              setOpen(false);
+              setErrors([]);
+            }}
+          />
+        </div>
+      )}
       {projects.isPending && <p>Loading…</p>}
       {projects.isError && <p className="text-red-600">Failed to load.</p>}
       <ul className="space-y-2">

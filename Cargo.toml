@@ -12,6 +12,7 @@ publish = false
 api-types = { path = "crates/api-types" }
 core-logic = { path = "crates/core" }
 db = { path = "crates/db" }
+workspace = { path = "crates/workspace" }
 
 # async / web
 tokio = { version = "1", features = ["full"] }

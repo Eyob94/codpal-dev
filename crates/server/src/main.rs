@@ -16,12 +16,25 @@ async fn main() -> anyhow::Result<()> {
         db::migrate(&pool).await?;
     }
 
+    tokio::fs::create_dir_all(&cfg.workspace_dir).await?;
+    server::recover_interrupted_clones(&pool, &cfg.workspace_dir).await?;
+
     let listener = tokio::net::TcpListener::bind(cfg.bind_addr).await?;
     tracing::info!("listening on {}", cfg.bind_addr);
-    axum::serve(listener, app(AppState { pool }, &cfg.web_dist))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await?;
+    axum::serve(
+        listener,
+        app(
+            AppState {
+                pool,
+                workspace_dir: cfg.workspace_dir.clone(),
+                clone_timeout: cfg.clone_timeout,
+            },
+            &cfg.web_dist,
+        ),
+    )
+    .with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await?;
     Ok(())
 }
